@@ -62,13 +62,20 @@ jobs:
 
       - name: Terraform Plan
         working-directory: terraform
-        run: terraform plan -var="strava_client_id=${{ secrets.STRAVA_CLIENT_ID }}" \
-                            -var="strava_client_secret=${{ secrets.STRAVA_CLIENT_SECRET }}" \
-                            -var="strava_refresh_token=${{ secrets.STRAVA_REFRESH_TOKEN }}"
+        env:
+          TF_VAR_strava_client_id: ${{ secrets.STRAVA_CLIENT_ID }}
+          TF_VAR_strava_client_secret: ${{ secrets.STRAVA_CLIENT_SECRET }}
+          TF_VAR_strava_refresh_token: ${{ secrets.STRAVA_REFRESH_TOKEN }}
+          TF_VAR_report_email_to: ${{ secrets.REPORT_EMAIL_TO }}
+          TF_VAR_report_email_from: ${{ secrets.REPORT_EMAIL_FROM }}
+        run: terraform plan
 
       - name: Terraform Apply
         working-directory: terraform
-        run: terraform apply -auto-approve \
-                             -var="strava_client_id=${{ secrets.STRAVA_CLIENT_ID }}" \
-                             -var="strava_client_secret=${{ secrets.STRAVA_CLIENT_SECRET }}" \
-                             -var="strava_refresh_token=${{ secrets.STRAVA_REFRESH_TOKEN }}"
+        env:
+          TF_VAR_strava_client_id: ${{ secrets.STRAVA_CLIENT_ID }}
+          TF_VAR_strava_client_secret: ${{ secrets.STRAVA_CLIENT_SECRET }}
+          TF_VAR_strava_refresh_token: ${{ secrets.STRAVA_REFRESH_TOKEN }}
+          TF_VAR_report_email_to: ${{ secrets.REPORT_EMAIL_TO }}
+          TF_VAR_report_email_from: ${{ secrets.REPORT_EMAIL_FROM }}
+        run: terraform apply -auto-approve
