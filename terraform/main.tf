@@ -8,7 +8,7 @@ terraform {
   }
 
   backend "s3" {
-    bucket = "your-terraform-state-bucket"
+    bucket = "dpalm-terraform-state-832388"
     key    = "strava-insights/terraform.tfstate"
     region = "us-east-1"
   }
