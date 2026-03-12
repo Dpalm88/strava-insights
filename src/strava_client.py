@@ -73,3 +73,26 @@ class StravaClient:
         )
         response.raise_for_status()
         return response.json()
+
+    def get_streams(self, activity_id: int) -> dict:
+        """
+        Fetch time and distance streams for an activity.
+        Returns dict with 'time' and 'distance' lists (one entry per second of GPS data).
+        Used for computing best segment splits within a longer run.
+        """
+        logger.info(f'Fetching streams for activity {activity_id}')
+        response = requests.get(
+            f'{STRAVA_API_BASE}/activities/{activity_id}/streams',
+            headers=self._get_headers(),
+            params={'keys': 'time,distance', 'key_by_type': 'true'},
+            timeout=15,
+        )
+        if response.status_code == 404:
+            logger.warning(f'No streams available for activity {activity_id}')
+            return {}
+        response.raise_for_status()
+        data = response.json()
+        return {
+            'time': data.get('time', {}).get('data', []),
+            'distance': data.get('distance', {}).get('data', []),
+        }

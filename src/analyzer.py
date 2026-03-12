@@ -58,12 +58,13 @@ class TrainingAnalyzer:
             )
             w["total_seconds"] += activity.get("moving_time", 0)
 
-        # Calculate avg pace per week
+        # Calculate avg pace per week — total distance / total time = avg m/s
         summaries = []
         for week, data in sorted(weeks.items(), reverse=True):
-            if data["total_miles"] > 0:
-                avg_speed = (data["total_miles"] * 1609.34) / data["total_seconds"] if data["total_seconds"] > 0 else 0
-                data["avg_pace"] = self._speed_to_pace(avg_speed / 1609.34 * MPS_TO_MIN_PER_MILE / 60)
+            if data["total_miles"] > 0 and data["total_seconds"] > 0:
+                total_meters = data["total_miles"] / METERS_TO_MILES
+                avg_mps = total_meters / data["total_seconds"]
+                data["avg_pace"] = self._speed_to_pace(avg_mps)
             data["week"] = week
             data["total_miles"] = round(data["total_miles"], 2)
             summaries.append(data)
@@ -123,7 +124,9 @@ class TrainingAnalyzer:
 
     def best_efforts(self, activities: list) -> dict:
         """
-        Find best (fastest) efforts for common race distances.
+        Find best (fastest pace) efforts for common race distances.
+        Uses a tight 5% tolerance to avoid matching training runs at
+        race distances — sorts by pace (speed) not raw time.
         """
         logger.info("Calculating best efforts")
         distance_targets = {
@@ -132,7 +135,7 @@ class TrainingAnalyzer:
             "half_marathon": 21097,
             "marathon": 42195,
         }
-        tolerance = 0.10  # 10% tolerance on distance
+        tolerance = 0.05  # tightened to 5% to avoid false matches
 
         bests = {}
         for label, target_meters in distance_targets.items():
@@ -141,17 +144,126 @@ class TrainingAnalyzer:
             candidates = [
                 a for a in activities
                 if low <= a.get("distance", 0) <= high
+                and a.get("moving_time", 0) > 0
             ]
+            # Filter out walks/hikes — anything slower than 15:00/mile is not a run effort
+            # 15:00/mile = 0.001118 m/s
+            MIN_PACE_MPS = 1 / (15 * 60 / 1609.34)
+            candidates = [a for a in candidates if a["distance"] / a["moving_time"] >= MIN_PACE_MPS]
+
             if candidates:
-                fastest = min(candidates, key=lambda a: a.get("moving_time", float("inf")))
+                # Sort by best pace (highest speed = lowest seconds per meter)
+                fastest = max(candidates, key=lambda a: a["distance"] / a["moving_time"])
                 bests[label] = {
                     "date": fastest["start_date"][:10],
                     "distance_miles": self._meters_to_miles(fastest["distance"]),
                     "time": str(timedelta(seconds=fastest["moving_time"])),
-                    "pace": self._speed_to_pace(
-                        fastest["distance"] / fastest["moving_time"]
-                        if fastest.get("moving_time") else 0
-                    ),
+                    "pace": self._speed_to_pace(fastest["distance"] / fastest["moving_time"]),
                 }
+
+        return bests
+
+    def fastest_segment(self, streams: dict, target_distance_m: float) -> dict | None:
+        """
+        Find the fastest segment of exactly target_distance_m within a run
+        using a two-pointer sliding window over the distance stream.
+
+        How it works:
+        - distance[] and time[] are parallel arrays — distance[i] is how far
+          the athlete has run at time[i] seconds into the activity
+        - We use two pointers (left, right) and advance right until the window
+          covers at least target_distance_m, then record the elapsed time
+        - Slide left forward and repeat — O(n) over the stream length
+        - Return the window with the lowest elapsed time (fastest pace)
+
+        Returns a dict with time_seconds and pace, or None if stream is too short.
+        """
+        distances = streams.get('time', [])  # confusingly named — these are the time values
+        times = streams.get('time', [])
+        dist_data = streams.get('distance', [])
+        time_data = streams.get('time', [])
+
+        if not dist_data or not time_data or len(dist_data) < 2:
+            return None
+
+        # Must be long enough to contain the target distance
+        if dist_data[-1] < target_distance_m:
+            return None
+
+        best_time = float('inf')
+        best_start_idx = 0
+        best_end_idx = 0
+        left = 0
+
+        for right in range(1, len(dist_data)):
+            window_dist = dist_data[right] - dist_data[left]
+
+            # Slide left pointer forward while window still covers target
+            while window_dist > target_distance_m and left < right - 1:
+                left += 1
+                window_dist = dist_data[right] - dist_data[left]
+
+            if window_dist >= target_distance_m:
+                elapsed = time_data[right] - time_data[left]
+                if elapsed < best_time:
+                    best_time = elapsed
+                    best_start_idx = left
+                    best_end_idx = right
+
+        if best_time == float('inf'):
+            return None
+
+        pace = self._speed_to_pace(target_distance_m / best_time)
+        return {
+            'time_seconds': best_time,
+            'time': str(timedelta(seconds=int(best_time))),
+            'pace': pace,
+            'distance_miles': self._meters_to_miles(target_distance_m),
+        }
+
+    def best_efforts_with_streams(self, activities: list, strava_client) -> dict:
+        """
+        Enhanced best efforts that uses GPS streams to find fastest segments.
+        For each distance target, checks all eligible activities for their
+        fastest split of that distance — not just whole-activity efforts.
+
+        Falls back to activity-level best_efforts() if streams are unavailable.
+        """
+        logger.info('Calculating best efforts using GPS streams')
+        distance_targets = {
+            '5K': 5000,
+            '10K': 10000,
+            'half_marathon': 21097,
+            'marathon': 42195,
+        }
+
+        # Only fetch streams for runs long enough to contain each target
+        bests = {}
+        for label, target_m in distance_targets.items():
+            best_for_distance = None
+            best_time = float('inf')
+
+            eligible = [a for a in activities if a.get('distance', 0) >= target_m * 0.95]
+            logger.info(f'{label}: checking {len(eligible)} eligible activities')
+
+            for activity in eligible:
+                try:
+                    streams = strava_client.get_streams(activity['id'])
+                    if not streams:
+                        continue
+                    result = self.fastest_segment(streams, target_m)
+                    if result and result['time_seconds'] < best_time:
+                        best_time = result['time_seconds']
+                        best_for_distance = {
+                            **result,
+                            'date': activity['start_date'][:10],
+                            'activity_name': activity.get('name', ''),
+                        }
+                except Exception as e:
+                    logger.warning(f'Stream fetch failed for {activity["id"]}: {e}')
+                    continue
+
+            if best_for_distance:
+                bests[label] = best_for_distance
 
         return bests

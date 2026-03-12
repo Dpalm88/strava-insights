@@ -48,7 +48,9 @@ def lambda_handler(event, context):
         # Analyze and generate summaries
         weekly_summary = analyzer.weekly_summary(activities)
         performance_trends = analyzer.performance_trends(activities)
-        best_efforts = analyzer.best_efforts(activities)
+        # Use streams for accurate segment-based best efforts (fastest 5K within a 10K, etc.)
+        # Falls back gracefully if streams are unavailable for any activity
+        best_efforts = analyzer.best_efforts_with_streams(activities, strava)
 
         # Build full summary payload
         summary = {

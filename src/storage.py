@@ -90,11 +90,15 @@ class DynamoStorage:
             raise
 
     def list_summaries(self, limit: int = 10) -> list:
-        """Scan for recent summaries (use sparingly — full table scan)."""
-        response = self.table.scan(Limit=limit)
+        """Scan all summaries and return the most recent ones sorted by summary_id desc.
+        Note: DynamoDB's Limit param controls items *evaluated* before filtering,
+        not items returned — so we scan the full table and sort in Python instead.
+        """
+        response = self.table.scan()
         items = response.get("Items", [])
-        return sorted(
+        sorted_items = sorted(
             json.loads(json.dumps(items, default=_decimal_default)),
             key=lambda x: x.get("summary_id", ""),
             reverse=True,
         )
+        return sorted_items[:limit]
